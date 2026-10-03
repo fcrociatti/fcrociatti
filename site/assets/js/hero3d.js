@@ -5,10 +5,25 @@
   'use strict';
 
   const canvas = document.getElementById('heroCanvas');
-  if (!canvas || typeof THREE === 'undefined') return;
+  if (!canvas) return;
+
+  // O Three.js (~670 KB) só é baixado depois que a página carregou, para não atrasar o texto.
+  function start() {
+    if (typeof THREE !== 'undefined') { boot(); return; }
+    const s = document.createElement('script');
+    s.src = 'assets/vendor/three.min.js';
+    s.onload = boot;
+    document.head.appendChild(s);
+  }
+  const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 200));
+  if (document.readyState === 'complete') idle(start, { timeout: 1500 });
+  else window.addEventListener('load', () => idle(start, { timeout: 1500 }));
+
+  function boot() {
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const isMobile = window.matchMedia('(max-width: 760px)').matches;
+  const isTouch = !window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+  const isMobile = isTouch || window.matchMedia('(max-width: 760px)').matches;
   const lowPower = isMobile || (navigator.hardwareConcurrency || 8) <= 4;
 
   let renderer;
@@ -18,7 +33,7 @@
     canvas.remove();
     return;
   }
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, lowPower ? 1.5 : 2));
+  renderer.setPixelRatio(isMobile ? 1 : Math.min(window.devicePixelRatio, lowPower ? 1.5 : 2));
   renderer.setClearColor(0x000000, 0);
 
   const scene = new THREE.Scene();
@@ -29,7 +44,7 @@
   scene.add(root);
 
   const BLUE = new THREE.Color('#2f6bff');
-  const CYAN = new THREE.Color('#4cc9ff');
+  const CYAN = new THREE.Color('#38bdf8');
 
   /* ---------- ruído simplex 3D (Ashima Arts / Stefan Gustavson, MIT) ---------- */
   const NOISE = `
@@ -68,7 +83,7 @@
     uColorB: { value: CYAN.clone() },
   };
 
-  const coreGeo = new THREE.IcosahedronGeometry(1.45, lowPower ? 40 : 90);
+  const coreGeo = new THREE.IcosahedronGeometry(1.45, isMobile ? 18 : lowPower ? 40 : 90);
   const coreMat = new THREE.ShaderMaterial({
     uniforms,
     transparent: true,
@@ -129,7 +144,7 @@
   shell.add(nodes);
 
   /* ---------- anel orbital ---------- */
-  const ringCount = lowPower ? 700 : 1600;
+  const ringCount = isMobile ? 350 : lowPower ? 700 : 1600;
   const ringPos = new Float32Array(ringCount * 3);
   for (let i = 0; i < ringCount; i++) {
     const a = Math.random() * Math.PI * 2;
@@ -146,7 +161,7 @@
   root.add(ring);
 
   /* ---------- campo de partículas ---------- */
-  const starCount = lowPower ? 900 : 2400;
+  const starCount = isMobile ? 400 : lowPower ? 900 : 2400;
   const starPos = new Float32Array(starCount * 3);
   const starSeed = new Float32Array(starCount);
   for (let i = 0; i < starCount; i++) {
@@ -190,15 +205,14 @@
   const mouseTarget = new THREE.Vector2(0, 0);
   let scrollProgress = 0;
 
-  window.addEventListener('pointermove', (e) => {
-    mouseTarget.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
-  }, { passive: true });
+  if (!isTouch) {
+    window.addEventListener('pointermove', (e) => {
+      mouseTarget.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+    }, { passive: true });
+  }
 
   // giroscópio em celulares não está disponível em todos os navegadores; o toque já move a cena
-  window.addEventListener('touchmove', (e) => {
-    const t = e.touches[0];
-    if (t) mouseTarget.set((t.clientX / window.innerWidth) * 2 - 1, -(t.clientY / window.innerHeight) * 2 + 1);
-  }, { passive: true });
+  // no celular a cena gira sozinha devagar; nenhum gesto é capturado
 
   canvas.parentElement.addEventListener('pointerdown', (e) => {
     if (e.target.closest('a, button')) return;
@@ -226,7 +240,13 @@
     coreMat.opacity = 1;
   }
   layout();
-  window.addEventListener('resize', layout);
+  let lastW = canvas.clientWidth;
+  window.addEventListener('resize', () => {
+    // no celular a barra de endereço muda a altura ao rolar; só refaz quando a largura muda
+    if (isTouch && canvas.clientWidth === lastW) return;
+    lastW = canvas.clientWidth;
+    layout();
+  });
 
   /* ---------- loop ---------- */
   let visible = true;
@@ -234,10 +254,17 @@
   const clock = new THREE.Clock();
   new IntersectionObserver((entries) => { visible = entries[0].isIntersecting; }, { threshold: 0 }).observe(canvas);
 
+  // no celular: até 30 quadros por segundo; para quando sai da tela ou a aba fica oculta
+  const minFrame = isMobile ? 1 / 30 : 0;
+  let acc = 0;
   function frame() {
     requestAnimationFrame(frame);
-    if (!visible) { clock.getDelta(); return; }
-    const dt = Math.min(clock.getDelta(), 0.05);
+    if (!visible || document.hidden) { clock.getDelta(); return; }
+    acc += clock.getDelta();
+    if (acc < minFrame) return;
+    const dt = Math.min(acc, 0.05);
+    acc = 0;
+    if (isTouch) mouseTarget.set(Math.sin(uniforms.uTime.value * 0.3) * 0.35, Math.cos(uniforms.uTime.value * 0.23) * 0.2);
     const speed = reduceMotion ? 0.15 : 1;
     uniforms.uTime.value += dt * speed;
 
@@ -269,6 +296,7 @@
     renderer.render(scene, camera);
   }
   frame();
+  canvas.classList.add('is-ready');
 
   window.Hero3D = {
     pulse() { uniforms.uPulse.value = 1; },
@@ -285,5 +313,6 @@
     g.fillStyle = grd;
     g.fillRect(0, 0, 64, 64);
     return new THREE.CanvasTexture(c);
+  }
   }
 })();
